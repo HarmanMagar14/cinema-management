@@ -21,8 +21,8 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Fantasy')->first()->id,
                 'duration' => 152,
                 'release_date' => '2001-11-16',
-                'poster' => 'storage/posters/Harry Potter and the Philosopher\'s Stone.jpg',
-                'trailer_url' => 'https://www.youtube.com/watch?v=VyHV0BRtdxo',
+                'poster' => 'posters/harry-potter-and-the-philosophers-stone.jpg',
+                'trailer_url' => 'https://www.youtube.com/watch?v=SJVmeJaS44s',
             ],
             [
                 'title' => 'The Dark Knight',
@@ -30,7 +30,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Action')->first()->id,
                 'duration' => 152,
                 'release_date' => '2008-07-18',
-                'poster' => 'storage/posters/the-dark-knight.jpg',
+                'poster' => 'posters/the-dark-knight.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=EXeTwQWrcwY',
             ],
             [
@@ -39,7 +39,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Sci-Fi')->first()->id,
                 'duration' => 148,
                 'release_date' => '2010-07-16',
-                'poster' => 'storage/posters/Inception.jpg',
+                'poster' => 'posters/inception.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=YoHD9XEInc0',
             ],
             [
@@ -48,7 +48,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Drama')->first()->id,
                 'duration' => 142,
                 'release_date' => '1994-09-23',
-                'poster' => 'storage/posters/The Shawshank Redemption.jpg',
+                'poster' => 'posters/the-shawshank-redemption.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=PLl99DlL6b4',
             ],
             [
@@ -57,7 +57,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Thriller')->first()->id,
                 'duration' => 154,
                 'release_date' => '1994-10-14',
-                'poster' => 'storage/posters/Pulp Fiction.jpg',
+                'poster' => 'posters/pulp-fiction.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=s7EdQ4FqbhY',
             ],
             [
@@ -66,7 +66,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Fantasy')->first()->id,
                 'duration' => 178,
                 'release_date' => '2001-12-19',
-                'poster' => 'storage/posters/The Lord of the Rings The Fellowship of the Ring.jpg',
+                'poster' => 'posters/the-lord-of-the-rings-the-fellowship-of-the-ring.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=V75dMMIW2B4',
             ],
             [
@@ -75,7 +75,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Drama')->first()->id,
                 'duration' => 142,
                 'release_date' => '1994-07-06',
-                'poster' => 'storage/posters/Forrest Gump.jpg',
+                'poster' => 'posters/forrest-gump.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=bLvqoHBptjg',
             ],
             [
@@ -84,7 +84,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Sci-Fi')->first()->id,
                 'duration' => 136,
                 'release_date' => '1999-03-31',
-                'poster' => 'storage/posters/The Matrix.jpg',
+                'poster' => 'posters/the-matrix.png',
                 'trailer_url' => 'https://www.youtube.com/watch?v=vKQi3bBA1y8',
             ],
             [
@@ -93,7 +93,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Romance')->first()->id,
                 'duration' => 195,
                 'release_date' => '1997-12-19',
-                'poster' => 'storage/posters/Titanic.jpg',
+                'poster' => 'posters/titanic.png',
                 'trailer_url' => 'https://www.youtube.com/watch?v=kVrqfYjkTdQ',
             ],
             [
@@ -102,7 +102,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Action')->first()->id,
                 'duration' => 143,
                 'release_date' => '2012-05-04',
-                'poster' => 'storage/posters/The Avengers.jpg',
+                'poster' => 'posters/the-avengers.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=eOrNdBpGMv8',
             ],
             [
@@ -111,7 +111,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Animation')->first()->id,
                 'duration' => 81,
                 'release_date' => '1995-11-22',
-                'poster' => 'storage/posters/Toy Story.jpg',
+                'poster' => 'posters/toy-story.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=v-PjgYDrg70',
             ],
             [
@@ -120,7 +120,7 @@ class MoviesSeeder extends Seeder
                 'genre_id' => Genres::where('name', 'Horror')->first()->id,
                 'duration' => 112,
                 'release_date' => '2013-07-19',
-                'poster' => 'storage/posters/The Conjuring.jpg',
+                'poster' => 'posters/the-conjuring.jpg',
                 'trailer_url' => 'https://www.youtube.com/watch?v=k10ETZ41q5o',
             ],
             [

@@ -23,10 +23,10 @@
         <div class="d-flex align-items-center gap-3">
             <span style="font-size:0.8rem;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--muted);">Date Range</span>
             <div class="btn-group" role="group">
-                <button type="button" class="btn btn-outline-primary btn-sm active" onclick="updateDateRange('7')">Last 7 Days</button>
-                <button type="button" class="btn btn-outline-primary btn-sm" onclick="updateDateRange('30')">Last 30 Days</button>
-                <button type="button" class="btn btn-outline-primary btn-sm" onclick="updateDateRange('90')">Last 90 Days</button>
-                <button type="button" class="btn btn-outline-primary btn-sm" onclick="updateDateRange('365')">Last Year</button>
+                @foreach($rangeOptions as $optionDays => $optionLabel)
+                <a href="{{ route('admin.analytics', ['days' => $optionDays]) }}"
+                   class="btn btn-outline-primary btn-sm {{ $range === $optionDays ? 'active' : '' }}">{{ $optionLabel }}</a>
+                @endforeach
             </div>
         </div>
     </div>
@@ -39,13 +39,14 @@
             <div class="stat-icon red"><i class="bi bi-ticket-perforated"></i></div>
             <div class="stat-label">Total Bookings</div>
             <div class="stat-value">{{ number_format($totalBookings) }}</div>
+            <small style="color:var(--muted);">{{ number_format($totalTickets) }} {{ Str::plural('ticket', $totalTickets) }} · {{ $rangeOptions[$range] }}</small>
         </div>
     </div>
     <div class="col-md-3">
         <div class="stat-card accent-green">
             <div class="stat-icon green"><i class="bi bi-cash-stack"></i></div>
             <div class="stat-label">Total Revenue</div>
-            <div class="stat-value">₱{{ number_format($totalRevenue / 1000, 1) }}K</div>
+            <div class="stat-value">₱{{ $totalRevenue >= 1000 ? number_format($totalRevenue / 1000, 1) . 'K' : number_format($totalRevenue, 0) }}</div>
         </div>
     </div>
     <div class="col-md-3">
@@ -158,10 +159,10 @@
     <div class="col-lg-4">
         <div class="card">
             <div class="card-header">
-                <h5 class="mb-0">Top Movies</h5>
+                <h5 class="mb-0">Top Movies <small style="color:var(--muted);font-weight:400;font-size:0.75rem;">by tickets sold</small></h5>
             </div>
             <div class="card-body p-0">
-                @foreach($topMovies as $movie)
+                @forelse($topMovies as $movie)
                 <div class="d-flex justify-content-between align-items-center px-4 py-3" style="border-bottom:1px solid var(--border);">
                     <div>
                         <div style="font-weight:600;font-size:0.88rem;">{{ $movie->title }}</div>
@@ -169,7 +170,9 @@
                     </div>
                     <span class="badge bg-primary rounded-pill">{{ $movie->bookings_count }}</span>
                 </div>
-                @endforeach
+                @empty
+                <div class="text-center px-4 py-4" style="color:var(--muted);font-size:0.85rem;">No tickets sold in this period.</div>
+                @endforelse
             </div>
         </div>
     </div>
@@ -184,7 +187,7 @@
             </div>
             <div class="card-body text-center">
                 <canvas id="userGrowthChart" height="150"></canvas>
-                <p class="mt-2 mb-0" style="color:var(--muted);font-size:0.8rem;">Last 30 days</p>
+                <p class="mt-2 mb-0" style="color:var(--muted);font-size:0.8rem;">{{ $rangeOptions[$range] }}</p>
             </div>
         </div>
     </div>
@@ -204,17 +207,19 @@
                 <h5 class="mb-0">Repeat Customers</h5>
             </div>
             <div class="card-body text-center py-4">
-                <div style="font-family:'Bebas Neue',sans-serif;font-size:3rem;color:var(--accent2);letter-spacing:2px;">68%</div>
-                <p style="color:var(--muted);font-size:0.85rem;" class="mb-4">Of users made multiple bookings</p>
+                <div style="font-family:'Bebas Neue',sans-serif;font-size:3rem;color:var(--accent2);letter-spacing:2px;">{{ $repeatCustomers['repeat_rate'] }}%</div>
+                <p style="color:var(--muted);font-size:0.85rem;" class="mb-4">
+                    of {{ number_format($repeatCustomers['customers']) }} {{ Str::plural('customer', $repeatCustomers['customers']) }} made more than one booking (all time)
+                </p>
                 <div class="text-start">
                     <div class="d-flex justify-content-between mb-2" style="font-size:0.85rem;">
-                        <span style="color:var(--muted);">1-2 bookings:</span><span style="font-weight:600;">25%</span>
+                        <span style="color:var(--muted);">1 booking:</span><span style="font-weight:600;">{{ $repeatCustomers['one'] }}%</span>
                     </div>
                     <div class="d-flex justify-content-between mb-2" style="font-size:0.85rem;">
-                        <span style="color:var(--muted);">3-5 bookings:</span><span style="font-weight:600;">28%</span>
+                        <span style="color:var(--muted);">2–4 bookings:</span><span style="font-weight:600;">{{ $repeatCustomers['two_to_four'] }}%</span>
                     </div>
                     <div class="d-flex justify-content-between" style="font-size:0.85rem;">
-                        <span style="color:var(--muted);">5+ bookings:</span><span style="font-weight:600;">15%</span>
+                        <span style="color:var(--muted);">5+ bookings:</span><span style="font-weight:600;">{{ $repeatCustomers['five_plus'] }}%</span>
                     </div>
                 </div>
             </div>
@@ -226,13 +231,6 @@
 @section('scripts')
 <script>
     let bookingsTrendChart, revenueTrendChart, genreChart, paymentMethodChart, userGrowthChart, userStatusChart;
-
-    function updateDateRange(days) {
-        // Since we are using static variables passed from the controller (last 7 days),
-        // we'll highlight that this is the current data.
-        // In a full implementation, this would trigger an AJAX call to the controller.
-        alert('Date range switching is currently limited to the last 7 days provided by the backend.');
-    }
 
     function initCharts() {
         // Data from Controller
@@ -381,9 +379,9 @@
         userStatusChart = new Chart(document.getElementById('userStatusChart'), {
             type: 'pie',
             data: {
-                labels: ['Active', 'Inactive', 'Banned'],
+                labels: ['Active', 'Pending', 'Banned'],
                 datasets: [{
-                    data: [340, 92, 18],
+                    data: @json($userStatus->values()),
                     backgroundColor: ['rgba(34,197,94,0.8)','rgba(245,197,24,0.8)','rgba(220,53,69,0.8)'],
                     borderWidth: 1
                 }]

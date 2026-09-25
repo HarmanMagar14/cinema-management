@@ -2,16 +2,13 @@
 
 namespace App\Http\Controllers;
 
-use App\Mail\BookingConfirmationMail;
 use App\Models\Bookings;
 use App\Models\Bookings_seats;
-use App\Models\Payments;
-use App\Models\Tickets;
 use App\Models\Showtimes;
+use App\Services\BookingPaymentService;
 use App\Services\PayMongoService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Mail;
 
 class BookingsController extends Controller
 {
@@ -174,8 +171,9 @@ class BookingsController extends Controller
         // Create PayMongo checkout session
         $user = auth()->user();
         
-        // Use the current request to build the success/cancel URLs to ensure they match the environment
-        $successUrl = route('bookings.payment-success', ['booking' => $booking->id]) . '?session={CHECKOUT_SESSION_ID}';
+        // Use the current request to build the success/cancel URLs to ensure they match the environment.
+        // The checkout session ID is stored on the payment below, so it doesn't need to be in the URL.
+        $successUrl = route('bookings.payment-success', ['booking' => $booking->id]);
         $cancelUrl = route('bookings.show', ['booking' => $booking->id]);
 
         $checkoutData = [
@@ -192,7 +190,8 @@ class BookingsController extends Controller
         $response = $this->payMongo->createCheckoutSession($checkoutData);
 
         if (!$response['success']) {
-            return back()->with('error', 'Failed to initiate payment: ' . $response['error']);
+            // PayMongoService already logged the full API error
+            return back()->with('error', "We couldn't start the payment right now. Please try again in a moment.");
         }
 
         // Store session ID in payment
@@ -215,109 +214,61 @@ class BookingsController extends Controller
             abort(403);
         }
 
-        $booking->load('payment', 'bookings_seats', 'tickets.seat');
+        $booking->load('payment');
 
         if (!$booking->payment) {
             return redirect()->route('bookings.show', $booking)->with('error', 'Payment record not found.');
         }
 
-        // Already confirmed — just show the booking
-        if ($booking->status === 'confirmed') {
-            return redirect()->route('bookings.show', $booking)->with('success', 'Your booking is confirmed!');
+        // Already confirmed (e.g. by the webhook) — just show the tickets
+        if ($booking->status === 'confirmed' && $booking->payment->status === 'paid') {
+            return redirect()->route('bookings.show', $booking)->with('success', 'Payment successful! Your booking is confirmed.');
         }
 
-        // Determine which session ID to verify:
-        // 1. Use the one stored in the DB (most reliable)
-        // 2. Fall back to URL param
-        $sessionId = $booking->payment->paymongo_session_id ?? $request->query('session');
+        // Only trust the session ID we stored when creating the checkout — never one from the URL
+        $sessionId = $booking->payment->paymongo_session_id;
 
         if (!$sessionId) {
-            return redirect()->route('bookings.show', $booking)->with('error', 'Payment session not found.');
+            return redirect()->route('bookings.show', $booking)->with('error', 'Payment session not found. Please click "Pay Now" to try again.');
         }
 
-        // Retrieve session from PayMongo to verify actual payment status
+        // Ask PayMongo whether the session was actually paid. Landing on this URL
+        // proves nothing by itself — anyone can open it.
         $response = $this->payMongo->retrieveCheckoutSession($sessionId);
 
         if (!$response['success']) {
-            // PayMongo API call failed — mark as confirmed optimistically if
-            // the user arrived on the success URL (PayMongo only redirects here on success)
-            Log::warning('Could not verify PayMongo session, confirming optimistically', [
+            Log::warning('Could not verify PayMongo session', [
                 'booking_id' => $booking->id,
                 'session_id' => $sessionId,
+                'error'      => $response['error'] ?? null,
             ]);
 
-            $booking->payment->update([
-                'status' => 'paid',
-                'method' => 'paymongo',
-                'date'   => now(),
-            ]);
-            $booking->update(['status' => 'confirmed']);
-
-            foreach ($booking->bookings_seats as $bookedSeat) {
-                $ticketCode = 'TIX-' . strtoupper(substr(md5(uniqid() . $booking->id), 0, 8));
-                Tickets::firstOrCreate(
-                    ['booking_id' => $booking->id, 'seat_id' => $bookedSeat->seat_id],
-                    ['code' => $ticketCode, 'issued_at' => now()]
-                );
-            }
-
-            $booking->load('showtime.movie', 'showtime.hall.cinema', 'bookings_seats.seat', 'payment', 'tickets.seat', 'user');
-
-            // Send booking confirmation email with QR codes
-            try {
-                Mail::to($booking->user->email)->send(new BookingConfirmationMail($booking));
-            } catch (\Exception $e) {
-                Log::warning('Failed to send booking confirmation email', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
-            }
-
-            return redirect()->route('bookings.show', $booking)->with('success', 'Payment successful! Your tickets have been sent to your email.');
+            return redirect()->route('bookings.show', $booking)
+                ->with('info', "We couldn't confirm your payment with PayMongo yet. If you completed it, click \"Check payment status\" in a moment.");
         }
 
-        $sessionData   = $response['data'];
-        $sessionStatus = $sessionData['attributes']['status'] ?? null;
+        $sessionData = $response['data'];
 
-        Log::info('PayMongo session status', [
+        Log::info('PayMongo session checked', [
             'booking_id'     => $booking->id,
             'session_id'     => $sessionId,
-            'session_status' => $sessionStatus,
+            'session_status' => $sessionData['attributes']['status'] ?? null,
+            'paid'           => $this->payMongo->isCheckoutSessionPaid($sessionData),
         ]);
 
-        if ($sessionStatus === 'paid' || $sessionStatus === 'active') {
-            // Update payment record
-            $booking->payment->update([
-                'status'              => 'paid',
-                'method'              => 'paymongo',
-                'paymongo_session_id' => $sessionId,
-                'paymongo_payment_id' => $sessionData['attributes']['payments'][0]['id'] ?? null,
-                'date'                => now(),
+        if ($this->payMongo->isCheckoutSessionPaid($sessionData)) {
+            $paymentAttributes = $sessionData['attributes']['payments'][0] ?? [];
+
+            (new BookingPaymentService())->confirm($booking, [
+                'paymongo_payment_id' => $paymentAttributes['id'] ?? null,
+                'payment_method_type' => $paymentAttributes['attributes']['source']['type'] ?? null,
             ]);
-
-            // Confirm booking
-            $booking->update(['status' => 'confirmed']);
-
-            // Generate tickets
-            foreach ($booking->bookings_seats as $bookedSeat) {
-                $ticketCode = 'TIX-' . strtoupper(substr(md5(uniqid() . $booking->id), 0, 8));
-                Tickets::firstOrCreate(
-                    ['booking_id' => $booking->id, 'seat_id' => $bookedSeat->seat_id],
-                    ['code' => $ticketCode, 'issued_at' => now()]
-                );
-            }
-
-            $booking->load('showtime.movie', 'showtime.hall.cinema', 'bookings_seats.seat', 'payment', 'tickets.seat', 'user');
-
-            // Send booking confirmation email with QR codes
-            try {
-                Mail::to($booking->user->email)->send(new BookingConfirmationMail($booking));
-            } catch (\Exception $e) {
-                Log::warning('Failed to send booking confirmation email', ['booking_id' => $booking->id, 'error' => $e->getMessage()]);
-            }
 
             return redirect()->route('bookings.show', $booking)->with('success', 'Payment successful! Your tickets have been sent to your email.');
         }
 
         return redirect()->route('bookings.show', $booking)
-            ->with('error', 'Payment was not completed. Status: ' . ($sessionStatus ?? 'unknown'));
+            ->with('error', 'Payment was not completed. You can click "Pay Now" to try again.');
     }
 
     public function cancel(Request $request, Bookings $booking)

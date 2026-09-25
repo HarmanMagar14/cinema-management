@@ -150,6 +150,11 @@
             color: #4ade80;
         }
 
+        .otp-alert.info {
+            background: rgba(245,197,24,0.1);
+            border: 1px solid rgba(245,197,24,0.3);
+            color: #facc15;
+        }
         .otp-alert.error {
             background: rgba(220,53,69,0.1);
             border: 1px solid rgba(220,53,69,0.3);
@@ -252,6 +257,12 @@
             <div class="otp-alert success">
                 <i class="bi bi-check-circle-fill"></i>
                 {{ session('success') }}
+            </div>
+        @endif
+        @if(session('info'))
+            <div class="otp-alert info">
+                <i class="bi bi-info-circle-fill"></i>
+                {{ session('info') }}
             </div>
         @endif
         @if($errors->has('otp'))

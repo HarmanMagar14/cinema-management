@@ -505,6 +505,11 @@
             @endif
 
             @if(!$isCanceled && optional($booking->payment)->status === 'pending')
+                @if($booking->payment->paymongo_session_id)
+                    <div class="mb-3">
+                        <a href="{{ route('bookings.payment-success', $booking) }}" class="btn-home">Check payment status</a>
+                    </div>
+                @endif
                 <form method="POST" action="{{ route('bookings.pay', $booking) }}" class="mb-3">
                     @csrf
                     <button type="submit" class="btn-home">Pay Now</button>

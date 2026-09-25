@@ -7,8 +7,12 @@ use App\Models\User;
 use App\Models\Roles;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class AuthController extends Controller
 {
@@ -38,7 +42,11 @@ class AuthController extends Controller
                     'otp_expires_at' => now()->addMinutes(10),
                 ]);
 
-                Mail::to($user->email)->send(new OtpMail($otp));
+                if (!$this->sendOtp($user, $otp)) {
+                    return back()->withInput($request->only('email'))
+                        ->withErrors(['email' => "We couldn't send a verification code to {$user->email}. Please try again later."]);
+                }
+
                 session(['otp_email' => $user->email]);
 
                 return redirect()->route('otp.show')
@@ -64,7 +72,8 @@ class AuthController extends Controller
     {
         $request->validate([
             'name'     => 'required',
-            'email'    => 'required|email|unique:users',
+            // An address that registered but never verified can register again
+            'email'    => ['required', 'email', Rule::unique('users')->where(fn ($q) => $q->where('status', '!=', 'pending'))],
             'password' => 'required|min:6|confirmed',
         ]);
 
@@ -72,21 +81,57 @@ class AuthController extends Controller
 
         $customerRole = Roles::firstOrCreate(['name' => 'customer']);
 
-        $user = User::create([
-            'name'           => $request->name,
-            'email'          => $request->email,
-            'password'       => Hash::make($request->password),
-            'role_id'        => $customerRole->id,
-            'status'         => 'pending',
-            'otp'            => $otp,
-            'otp_expires_at' => now()->addMinutes(10),
-        ]);
+        // Only keep the account if the code actually went out
+        DB::beginTransaction();
 
-        Mail::to($user->email)->send(new OtpMail($otp));
+        $user = User::updateOrCreate(
+            ['email' => $request->email, 'status' => 'pending'],
+            [
+                'name'           => $request->name,
+                'password'       => Hash::make($request->password),
+                'role_id'        => $customerRole->id,
+                'otp'            => $otp,
+                'otp_expires_at' => now()->addMinutes(10),
+            ]
+        );
 
-        session(['otp_email' => $user->email]);
+        if ($this->sendOtp($user, $otp)) {
+            DB::commit();
+        } else {
+            DB::rollBack();
+
+            return back()->withInput($request->except('password', 'password_confirmation'))
+                ->withErrors(['email' => "We couldn't send a verification code to {$request->email}. Please check the address or try again later."]);
+        }
+
+        session(['otp_email' => $request->email]);
 
         return redirect()->route('otp.show')->with('success', 'OTP sent to your email!');
+    }
+
+    /**
+     * Email the verification code. Returns false if it couldn't be sent.
+     *
+     * In local development, a failed send (e.g. Resend only delivers to the account
+     * owner until a domain is verified) is not fatal: the code is written to
+     * storage/logs/laravel.log so the flow can still be tested.
+     */
+    private function sendOtp(User $user, string $otp): bool
+    {
+        try {
+            Mail::to($user->email)->send(new OtpMail($otp));
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send OTP email', ['email' => $user->email, 'error' => $e->getMessage()]);
+
+            if (app()->isLocal()) {
+                Log::info("Local dev: OTP for {$user->email} is {$otp}");
+                session()->flash('info', "Email couldn't be sent (" . Str::limit($e->getMessage(), 120) . '). Local development: your code is in storage/logs/laravel.log.');
+                return true;
+            }
+
+            return false;
+        }
     }
 
     // Step 2: Show OTP input page

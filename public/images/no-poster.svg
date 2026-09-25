@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900" viewBox="0 0 600 900">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c28"/>
+      <stop offset="1" stop-color="#0a0a0f"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="900" fill="url(#bg)"/>
+  <g fill="none" stroke="#e8340a" stroke-opacity="0.8" stroke-width="10" stroke-linejoin="round">
+    <rect x="195" y="340" width="210" height="150" rx="14"/>
+    <path d="M195 380 H405 M195 450 H405 M240 340 V380 M285 340 V380 M330 340 V380 M375 340 V380 M240 450 V490 M285 450 V490 M330 450 V490 M375 450 V490"/>
+  </g>
+  <text x="300" y="560" font-family="'Segoe UI', Arial, sans-serif" font-size="26" fill="#f0eff4" fill-opacity="0.6" text-anchor="middle" letter-spacing="6">NO POSTER</text>
+</svg>

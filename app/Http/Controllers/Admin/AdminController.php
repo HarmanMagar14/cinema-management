@@ -15,6 +15,7 @@ use App\Models\Seats;
 use App\Models\Showtimes;
 use Illuminate\Http\Request;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
 
@@ -38,13 +39,8 @@ class AdminController extends Controller
         $days = $chartData['labels'];
         $revenueTrend = $chartData['data'];
 
-        // Top Movies
-        $topMovies = Movies::withCount(['showtimes as bookings_count' => function($q) {
-            $q->whereHas('bookings', function($bq) { $bq->where('status', 'confirmed'); });
-        }])
-        ->orderBy('bookings_count', 'desc')
-        ->take(5)
-        ->get();
+        // Top Movies (by tickets sold, all time)
+        $topMovies = $this->topMoviesByTickets();
 
         // Booking Status Distribution
         $bookingStatus = [
@@ -97,13 +93,19 @@ class AdminController extends Controller
 
     public function getRevenueChartData($daysCount = 7)
     {
+        $daysCount = max(1, min((int) $daysCount, 365));
+
         $days = collect(range($daysCount - 1, 0))->map(function($i) {
             return now()->subDays($i)->format('Y-m-d');
         });
 
-        $revenueTrend = $days->map(function($date) {
-            return Payments::whereDate('date', $date)->where('status', 'paid')->sum('amount');
-        });
+        $revenuePerDay = Payments::where('status', 'paid')
+            ->where('date', '>=', now()->subDays($daysCount - 1)->startOfDay())
+            ->groupByRaw('DATE(date)')
+            ->selectRaw('DATE(date) as day, SUM(amount) as total')
+            ->pluck('total', 'day');
+
+        $revenueTrend = $days->map(fn ($date) => (float) ($revenuePerDay[$date] ?? 0));
 
         return [
             'labels' => $days,
@@ -117,85 +119,139 @@ class AdminController extends Controller
         return response()->json($this->getRevenueChartData($days));
     }
 
-    public function analytics()
+    public function analytics(Request $request)
     {
+        $rangeOptions = [7 => 'Last 7 Days', 30 => 'Last 30 Days', 90 => 'Last 90 Days', 365 => 'Last Year'];
+        $range = (int) $request->query('days', 7);
+        if (!array_key_exists($range, $rangeOptions)) {
+            $range = 7;
+        }
+        $from = now()->subDays($range - 1)->startOfDay();
+
+        // Tickets = booked seats of confirmed bookings made in the range
+        $ticketsSold = fn () => DB::table('booking_seats')
+            ->join('bookings', 'bookings.id', '=', 'booking_seats.booking_id')
+            ->join('showtimes', 'showtimes.id', '=', 'bookings.showtime_id')
+            ->where('bookings.status', 'confirmed')
+            ->where('bookings.date', '>=', $from);
+
         // KPI Data
-        $totalBookings = Bookings::where('status', 'confirmed')->count();
-        $totalRevenue = Payments::where('status', 'paid')->sum('amount');
-        $avgTicketPrice = $totalBookings > 0 ? round($totalRevenue / $totalBookings, 2) : 0;
-        
-        // Occupancy Rate
-        $totalCapacity = Showtimes::join('halls', 'showtimes.hall_id', '=', 'halls.id')->sum('halls.capacity');
-        $bookedSeatsCount = \App\Models\Bookings_seats::whereHas('booking', function($q) {
-            $q->where('status', 'confirmed');
-        })->count();
-        $occupancyRate = $totalCapacity > 0 ? round(($bookedSeatsCount / $totalCapacity) * 100, 1) : 0;
+        $totalBookings = Bookings::where('status', 'confirmed')->where('date', '>=', $from)->count();
+        $totalTickets = $ticketsSold()->count();
+        $totalRevenue = (float) Payments::where('status', 'paid')->where('date', '>=', $from)->sum('amount');
+        $avgTicketPrice = $totalTickets > 0 ? round($totalRevenue / $totalTickets, 2) : 0;
+
+        // Occupancy: seats sold vs. seats available, for screenings in the range
+        $capacityByCinema = DB::table('showtimes')
+            ->join('halls', 'halls.id', '=', 'showtimes.hall_id')
+            ->where('showtimes.start_time', '>=', $from)
+            ->groupBy('halls.cinema_id')
+            ->selectRaw('halls.cinema_id, SUM(halls.capacity) as capacity')
+            ->pluck('capacity', 'cinema_id');
+
+        $seatsSoldByCinema = DB::table('booking_seats')
+            ->join('bookings', 'bookings.id', '=', 'booking_seats.booking_id')
+            ->join('showtimes', 'showtimes.id', '=', 'bookings.showtime_id')
+            ->join('halls', 'halls.id', '=', 'showtimes.hall_id')
+            ->where('bookings.status', 'confirmed')
+            ->where('showtimes.start_time', '>=', $from)
+            ->groupBy('halls.cinema_id')
+            ->selectRaw('halls.cinema_id, COUNT(*) as seats')
+            ->pluck('seats', 'cinema_id');
+
+        $totalCapacity = $capacityByCinema->sum();
+        $occupancyRate = $totalCapacity > 0 ? round($seatsSoldByCinema->sum() / $totalCapacity * 100, 1) : 0;
 
         // Cinema Performance
-        $cinemaPerformance = Cinemas::with(['halls.showtimes.bookings' => function($q) {
-            $q->where('status', 'confirmed');
-        }])->get()->map(function($cinema) {
-            $bookingsCount = 0;
-            $revenue = 0;
-            $capacity = 0;
-            foreach($cinema->halls as $hall) {
-                foreach($hall->showtimes as $showtime) {
-                    $bookingsCount += $showtime->bookings->count();
-                    $revenue += $showtime->bookings->count() * $showtime->price;
-                    $capacity += $hall->capacity;
-                }
-            }
+        $bookingsByCinema = DB::table('bookings')
+            ->join('showtimes', 'showtimes.id', '=', 'bookings.showtime_id')
+            ->join('halls', 'halls.id', '=', 'showtimes.hall_id')
+            ->where('bookings.status', 'confirmed')
+            ->where('bookings.date', '>=', $from)
+            ->groupBy('halls.cinema_id')
+            ->selectRaw('halls.cinema_id, COUNT(*) as bookings')
+            ->pluck('bookings', 'cinema_id');
+
+        $revenueByCinema = DB::table('payments')
+            ->join('bookings', 'bookings.id', '=', 'payments.booking_id')
+            ->join('showtimes', 'showtimes.id', '=', 'bookings.showtime_id')
+            ->join('halls', 'halls.id', '=', 'showtimes.hall_id')
+            ->where('payments.status', 'paid')
+            ->where('payments.date', '>=', $from)
+            ->groupBy('halls.cinema_id')
+            ->selectRaw('halls.cinema_id, SUM(payments.amount) as revenue')
+            ->pluck('revenue', 'cinema_id');
+
+        $cinemaPerformance = Cinemas::orderBy('name')->get()->map(function ($cinema) use ($bookingsByCinema, $revenueByCinema, $capacityByCinema, $seatsSoldByCinema) {
+            $capacity = (int) ($capacityByCinema[$cinema->id] ?? 0);
             return [
                 'name' => $cinema->name,
-                'bookings' => $bookingsCount,
-                'revenue' => $revenue,
-                'occupancy' => $capacity > 0 ? round(($bookingsCount / $capacity) * 100, 1) : 0
+                'bookings' => (int) ($bookingsByCinema[$cinema->id] ?? 0),
+                'revenue' => (float) ($revenueByCinema[$cinema->id] ?? 0),
+                'occupancy' => $capacity > 0 ? round(($seatsSoldByCinema[$cinema->id] ?? 0) / $capacity * 100, 1) : 0,
             ];
         });
 
-        // Top Movies
-        $topMovies = Movies::withCount(['showtimes as bookings_count' => function($q) {
-            $q->whereHas('bookings', function($bq) { $bq->where('status', 'confirmed'); });
-        }])
-        ->orderBy('bookings_count', 'desc')
-        ->take(5)
-        ->get();
+        // Top Movies (by tickets sold)
+        $topMovies = $this->topMoviesByTickets($from);
 
-        // Trend Data (Last 7 Days)
-        $days = collect(range(6, 0))->map(function($i) {
-            return now()->subDays($i)->format('Y-m-d');
-        });
+        // Trend Data
+        $dates = collect(range($range - 1, 0))->map(fn ($i) => now()->subDays($i)->format('Y-m-d'));
+        $days = $dates->map(fn ($date) => Carbon::parse($date)->format('M j'));
 
-        $bookingsTrend = $days->map(function($date) {
-            return Bookings::whereDate('date', $date)->where('status', 'confirmed')->count();
-        });
+        $bookingsPerDay = Bookings::where('status', 'confirmed')->where('date', '>=', $from)
+            ->groupByRaw('DATE(date)')->selectRaw('DATE(date) as day, COUNT(*) as total')->pluck('total', 'day');
+        $revenuePerDay = Payments::where('status', 'paid')->where('date', '>=', $from)
+            ->groupByRaw('DATE(date)')->selectRaw('DATE(date) as day, SUM(amount) as total')->pluck('total', 'day');
+        $usersPerDay = User::where('created_at', '>=', $from)
+            ->groupByRaw('DATE(created_at)')->selectRaw('DATE(created_at) as day, COUNT(*) as total')->pluck('total', 'day');
 
-        $revenueTrend = $days->map(function($date) {
-            return Payments::whereDate('date', $date)->where('status', 'paid')->sum('amount');
-        });
+        $bookingsTrend = $dates->map(fn ($date) => (int) ($bookingsPerDay[$date] ?? 0));
+        $revenueTrend = $dates->map(fn ($date) => (float) ($revenuePerDay[$date] ?? 0));
+        $userGrowth = $dates->map(fn ($date) => (int) ($usersPerDay[$date] ?? 0));
 
-        // Genre Popularity
-        $genrePopularity = Genres::withCount(['movies as bookings_count' => function($q) {
-            $q->whereHas('showtimes.bookings', function($bq) {
-                $bq->where('status', 'confirmed');
-            });
-        }])->get();
+        // Genre Popularity (tickets sold per genre)
+        $ticketsByGenre = $ticketsSold()
+            ->join('movies', 'movies.id', '=', 'showtimes.movie_id')
+            ->groupBy('movies.genre_id')
+            ->selectRaw('movies.genre_id, COUNT(*) as tickets')
+            ->pluck('tickets', 'genre_id');
+
+        $genrePopularity = Genres::orderBy('name')->get()->each(function ($genre) use ($ticketsByGenre) {
+            $genre->bookings_count = (int) ($ticketsByGenre[$genre->id] ?? 0);
+        })->sortByDesc('bookings_count')->values();
 
         // Payment Methods
-        $paymentMethods = Payments::select('method', \DB::raw('count(*) as count'))
+        $paymentMethods = Payments::select('method', DB::raw('count(*) as count'))
             ->where('status', 'paid')
+            ->where('date', '>=', $from)
             ->groupBy('method')
             ->get();
 
-        // User Growth
-        $userGrowth = $days->map(function($date) {
-            return User::whereDate('created_at', $date)->count();
-        });
+        // User Status
+        $userStatus = User::groupBy('status')->selectRaw('status, COUNT(*) as total')->pluck('total', 'status');
+        $userStatus = collect(['active', 'pending', 'banned'])->mapWithKeys(fn ($s) => [$s => (int) ($userStatus[$s] ?? 0)]);
+
+        // Repeat Customers (all time): share of customers with more than one confirmed booking
+        $bookingsPerCustomer = Bookings::where('status', 'confirmed')
+            ->groupBy('user_id')->selectRaw('COUNT(*) as total')->pluck('total');
+        $customerCount = $bookingsPerCustomer->count();
+        $percentOfCustomers = fn ($n) => $customerCount > 0 ? round($n / $customerCount * 100) : 0;
+        $repeatCustomers = [
+            'customers' => $customerCount,
+            'repeat_rate' => $percentOfCustomers($bookingsPerCustomer->filter(fn ($n) => $n > 1)->count()),
+            'one' => $percentOfCustomers($bookingsPerCustomer->filter(fn ($n) => $n == 1)->count()),
+            'two_to_four' => $percentOfCustomers($bookingsPerCustomer->filter(fn ($n) => $n >= 2 && $n <= 4)->count()),
+            'five_plus' => $percentOfCustomers($bookingsPerCustomer->filter(fn ($n) => $n >= 5)->count()),
+        ];
 
         return view('admin.analytics', compact(
-            'totalBookings', 
-            'totalRevenue', 
-            'avgTicketPrice', 
+            'range',
+            'rangeOptions',
+            'totalBookings',
+            'totalTickets',
+            'totalRevenue',
+            'avgTicketPrice',
             'occupancyRate',
             'cinemaPerformance',
             'topMovies',
@@ -204,8 +260,33 @@ class AdminController extends Controller
             'revenueTrend',
             'genrePopularity',
             'paymentMethods',
-            'userGrowth'
+            'userGrowth',
+            'userStatus',
+            'repeatCustomers'
         ));
+    }
+
+    /**
+     * Movies ranked by tickets sold (booked seats of confirmed bookings).
+     * Each movie gets a `bookings_count` attribute holding its ticket count.
+     */
+    private function topMoviesByTickets(?Carbon $from = null, int $limit = 5)
+    {
+        $ticketsByMovie = DB::table('booking_seats')
+            ->join('bookings', 'bookings.id', '=', 'booking_seats.booking_id')
+            ->join('showtimes', 'showtimes.id', '=', 'bookings.showtime_id')
+            ->where('bookings.status', 'confirmed')
+            ->when($from, fn ($q) => $q->where('bookings.date', '>=', $from))
+            ->groupBy('showtimes.movie_id')
+            ->selectRaw('showtimes.movie_id, COUNT(*) as tickets')
+            ->orderByDesc('tickets')
+            ->limit($limit)
+            ->pluck('tickets', 'movie_id');
+
+        return Movies::with('genre')->whereIn('id', $ticketsByMovie->keys())->get()
+            ->each(fn ($movie) => $movie->bookings_count = (int) $ticketsByMovie[$movie->id])
+            ->sortByDesc('bookings_count')
+            ->values();
     }
 
     // USERS - LIST
@@ -367,12 +448,13 @@ class AdminController extends Controller
     // STEP 2 — show scheduling form for an already-saved movie
     public function showMovieShowtimes(Movies $movie)
     {
-        $movie->load('showtimes.hall.cinema', 'genre');
-        $cinemas = Cinemas::with('halls')->get();
+        $movie->load('genre');
+        $movie->setRelation('showtimes', $this->showtimesWithBookingCounts($movie));
+        $cinemas = Cinemas::with(['halls' => fn ($q) => $q->orderBy('name')])->orderBy('name')->get();
 
         $allShowtimes = Showtimes::with('movie:id,title')
             ->where('movie_id', '!=', $movie->id)
-            ->where('start_time', '>=', now())
+            ->where('end_time', '>=', now())
             ->orderBy('start_time')
             ->get()
             ->map(fn($st) => [
@@ -390,7 +472,8 @@ class AdminController extends Controller
         int $hallId,
         string $startTime,
         int $durationMinutes,
-        ?int $excludeId = null
+        ?int $excludeId = null,
+        ?int $excludeMovieId = null
     ): bool {
         $start = Carbon::parse($startTime);
         $end   = $start->copy()->addMinutes($durationMinutes);
@@ -407,7 +490,25 @@ class AdminController extends Controller
             $query->where('id', '!=', $excludeId);
         }
 
+        if ($excludeMovieId) {
+            $query->where('movie_id', '!=', $excludeMovieId);
+        }
+
         return $query->exists();
+    }
+
+    /**
+     * Load a movie's showtimes with how many live (non-canceled) bookings each has.
+     * Deleting a showtime cascades to its bookings, payments and tickets, and
+     * seats belong to a hall, so booked showtimes must not be removed or moved.
+     */
+    private function showtimesWithBookingCounts(Movies $movie)
+    {
+        return $movie->showtimes()
+            ->with('hall')
+            ->withCount(['bookings as active_bookings_count' => fn ($q) => $q->where('status', '!=', 'canceled')])
+            ->orderBy('start_time')
+            ->get();
     }
     // STEP 2 — save/update showtimes for an existing movie
     public function storeShowtimes(Request $request, Movies $movie)
@@ -420,6 +521,42 @@ class AdminController extends Controller
             'showtimes.*.id'             => 'nullable|exists:showtimes,id',
         ]);
 
+        $existing = $this->showtimesWithBookingCounts($movie)->keyBy('id');
+
+        // ── Check 0: protect showtimes that already have bookings ─────────────
+        foreach ($request->showtimes as $index => $stData) {
+            if (empty($stData['id'])) continue;
+
+            $current = $existing->get((int) $stData['id']);
+            if (!$current) {
+                return back()->withInput()->withErrors([
+                    "showtimes.{$index}.start_time" => 'This showtime does not belong to "' . $movie->title . '". Please reload the page.',
+                ]);
+            }
+
+            // Booked seats belong to the hall, so a booked showtime can't change hall
+            if ($current->active_bookings_count > 0 && (int) $stData['hall_id'] !== (int) $current->hall_id) {
+                return back()->withInput()->withErrors([
+                    "showtimes.{$index}.hall_id" => 'The ' . $current->start_time->format('M j, g:i A')
+                        . ' showtime already has bookings, so it must stay in hall "' . $current->hall->name . '".',
+                ]);
+            }
+        }
+
+        // Removing a showtime deletes its bookings, payments and tickets
+        $submittedIds = collect($request->showtimes)->pluck('id')->filter()->map(fn ($id) => (int) $id);
+        $removedWithBookings = $existing->filter(
+            fn ($st) => !$submittedIds->contains($st->id) && $st->active_bookings_count > 0
+        );
+
+        if ($removedWithBookings->isNotEmpty()) {
+            return back()->withInput()->withErrors([
+                'showtimes' => 'These showtimes already have bookings and cannot be removed: '
+                    . $removedWithBookings->map(fn ($st) => $st->start_time->format('M j, Y g:i A') . ' (' . $st->hall->name . ')')->implode(', ')
+                    . '. Cancel their bookings first.',
+            ]);
+        }
+
         // ── Check 1: conflicts within the submitted rows themselves ────────────
         // This catches overlaps between two NEW rows in the same submission
         // before anything is saved to the database.
@@ -430,7 +567,7 @@ class AdminController extends Controller
                 'end_ts'   => Carbon::parse($st['start_time'])->addMinutes($movie->duration)->timestamp,
                 'id'       => !empty($st['id']) ? (int) $st['id'] : null,
             ];
-        })->values();
+        }); // keep the form's row keys so errors point at the right row
 
         foreach ($submitted as $i => $rowA) {
             foreach ($submitted as $j => $rowB) {
@@ -451,11 +588,11 @@ class AdminController extends Controller
             }
         }
 
-        // ── Check 2: conflicts against existing database records ─────────────
-        // This catches overlaps against other movies already saved in the DB.
+        // ── Check 2: conflicts against other movies' showtimes in the DB ─────
+        // This movie's own showtimes are either in this submission (Check 1)
+        // or about to be removed, so their old times must not count as conflicts.
         foreach ($request->showtimes as $index => $stData) {
-            $excludeId = !empty($stData['id']) ? (int) $stData['id'] : null;
-            if ($this->hasConflict((int) $stData['hall_id'], $stData['start_time'], $movie->duration, $excludeId)) {
+            if ($this->hasConflict((int) $stData['hall_id'], $stData['start_time'], $movie->duration, null, $movie->id)) {
                 $hall = Halls::find($stData['hall_id']);
                 return back()->withInput()->withErrors([
                     "showtimes.{$index}.start_time" =>
@@ -464,41 +601,36 @@ class AdminController extends Controller
             }
         }
 
-        $keepIds = [];
+        DB::transaction(function () use ($request, $movie, $existing) {
+            $keepIds = [];
 
-        foreach ($request->showtimes as $stData) {
-            if (!empty($stData['id'])) {
-                $showtime = Showtimes::find($stData['id']);
-                if ($showtime && $showtime->movie_id === $movie->id) {
-                    $showtime->hall_id    = $stData['hall_id'];
-                    $showtime->start_time = $stData['start_time'];
-                    $showtime->end_time   = Carbon::parse($stData['start_time'])->addMinutes($movie->duration);
-                    $showtime->price      = $stData['price'];
-                    $showtime->save();
-                    $keepIds[] = $showtime->id;
-                }
-            } else {
-                $showtime = Showtimes::create([
-                    'movie_id'   => $movie->id,
+            foreach ($request->showtimes as $stData) {
+                $attributes = [
                     'hall_id'    => $stData['hall_id'],
                     'start_time' => $stData['start_time'],
                     'end_time'   => Carbon::parse($stData['start_time'])->addMinutes($movie->duration),
                     'price'      => $stData['price'],
-                ]);
+                ];
+
+                if (!empty($stData['id'])) {
+                    $showtime = $existing->get((int) $stData['id']);
+                    $showtime->update($attributes);
+                } else {
+                    $showtime = Showtimes::create($attributes + ['movie_id' => $movie->id]);
+                }
+
                 $keepIds[] = $showtime->id;
             }
-        }
 
-        // Delete removed showtimes
-        Showtimes::where('movie_id', $movie->id)
-            ->whereNotIn('id', $keepIds)
-            ->delete();
+            // Delete removed showtimes (Check 0 guarantees none of them have bookings)
+            Showtimes::where('movie_id', $movie->id)
+                ->whereNotIn('id', $keepIds)
+                ->delete();
 
-        // Keep legacy show_time_id in sync
-        if (!$movie->show_time_id && !empty($keepIds)) {
-            $movie->show_time_id = $keepIds[0];
+            // Keep legacy show_time_id pointing at the movie's earliest showtime
+            $movie->show_time_id = Showtimes::whereIn('id', $keepIds)->orderBy('start_time')->value('id');
             $movie->save();
-        }
+        });
 
         return redirect()->route('admin.movies.index')
             ->with('success', 'Showtimes saved for "' . $movie->title . '".');
@@ -554,12 +686,25 @@ class AdminController extends Controller
             'duration' => 'required|integer|min:1',
             'poster' => 'nullable|image|max:2048',
             'trailer_url' => 'nullable|url|max:255',
-            'showtimes' => 'required|array|min:1',
-            'showtimes.*.id' => 'nullable|exists:showtimes,id',
-            'showtimes.*.hall_id' => 'required|exists:halls,id',
-            'showtimes.*.start_time' => 'required|date',
-            'showtimes.*.price' => 'required|numeric|min:0',
         ]);
+
+        // Showtimes are managed on the separate scheduling page. A new duration
+        // changes when this movie's upcoming screenings end, so make sure the
+        // longer runtime doesn't run into the next screening in the same hall.
+        $durationChanged = (int) $validated['duration'] !== (int) $movie->duration;
+        $upcomingShowtimes = $durationChanged
+            ? $movie->showtimes()->with('hall')->where('end_time', '>', now())->get()
+            : collect();
+
+        foreach ($upcomingShowtimes as $st) {
+            if ($this->hasConflict($st->hall_id, $st->start_time->format('Y-m-d H:i:s'), (int) $validated['duration'], $st->id)) {
+                return back()->withInput()->withErrors([
+                    'duration' => 'With a ' . $validated['duration'] . '-minute runtime, the '
+                        . $st->start_time->format('M j, g:i A') . ' screening in hall "' . $st->hall->name
+                        . '" would overlap the next screening. Reschedule it first.',
+                ]);
+            }
+        }
 
         $movie->title = $validated['title'];
         $movie->description = $validated['description'];
@@ -575,55 +720,16 @@ class AdminController extends Controller
             $movie->poster = $request->file('poster')->store('posters', 'public');
         }
 
-        $movie->save();
+        DB::transaction(function () use ($movie, $upcomingShowtimes) {
+            $movie->save();
 
-        // Process showtimes
-        $keepShowtimeIds = [];
-        $firstShowtimeId = null;
-
-        foreach ($request->showtimes as $stData) {
-            if (isset($stData['id']) && !empty($stData['id'])) {
-                // Update existing
-                $showtime = Showtimes::find($stData['id']);
-                if ($showtime && $showtime->movie_id == $movie->id) {
-                    $showtime->hall_id = $stData['hall_id'];
-                    $showtime->start_time = $stData['start_time'];
-                    $showtime->price = $stData['price'];
-                    $showtime->end_time = Carbon::parse($stData['start_time'])->addMinutes($movie->duration);
-                    $showtime->save();
-                    $keepShowtimeIds[] = $showtime->id;
-                }
-            } else {
-                // Create new
-                $showtime = new Showtimes();
-                $showtime->movie_id = $movie->id;
-                $showtime->hall_id = $stData['hall_id'];
-                $showtime->start_time = $stData['start_time'];
-                $showtime->price = $stData['price'];
-                $showtime->end_time = Carbon::parse($stData['start_time'])->addMinutes($movie->duration);
-                $showtime->save();
-                $keepShowtimeIds[] = $showtime->id;
+            foreach ($upcomingShowtimes as $st) {
+                $st->update(['end_time' => $st->start_time->copy()->addMinutes($movie->duration)]);
             }
+        });
 
-            if (!$firstShowtimeId) {
-                $firstShowtimeId = $showtime->id;
-            }
-        }
-
-        // Delete removed showtimes that HAVE NO BOOKINGS
-        $removedShowtimes = $movie->showtimes()->whereNotIn('id', $keepShowtimeIds)->get();
-        foreach ($removedShowtimes as $rs) {
-            if ($rs->bookings()->count() == 0) {
-                $rs->delete();
-            }
-        }
-
-        // Update the legacy show_time_id
-        $movie->show_time_id = $firstShowtimeId;
-        $movie->save();
-        
         return redirect()->route('admin.movies.index')
-                       ->with('success', 'Movie and showtimes updated successfully');
+                       ->with('success', 'Movie updated successfully');
     }
 
     // MOVIES - DELETE
