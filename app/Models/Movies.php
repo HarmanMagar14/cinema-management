@@ -48,7 +48,7 @@ class Movies extends Model
     public function getPosterUrlAttribute(): string
     {
         if (empty($this->poster)) {
-            return 'https://via.placeholder.com/600x900?text=No+Poster';
+            return asset('images/no-poster.svg');
         }
 
         if (Str::startsWith($this->poster, ['http://', 'https://'])) {
@@ -76,7 +76,7 @@ class Movies extends Model
             }
         }
 
-        return 'https://via.placeholder.com/600x900?text=No+Poster';
+        return asset('images/no-poster.svg');
     }
 
     public function getTrailerEmbedUrlAttribute(): string

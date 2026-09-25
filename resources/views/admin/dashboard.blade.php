@@ -99,7 +99,7 @@
                     <thead>
                         <tr>
                             <th class="ps-4">Movie</th>
-                            <th>Bookings</th>
+                            <th>Tickets Sold</th>
                             <th class="text-end pe-4">Status</th>
                         </tr>
                     </thead>

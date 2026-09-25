@@ -111,32 +111,94 @@
                             <th style="width:8%;text-align:center;">Action</th>
                         </tr>
                     </thead>
+                    @php
+                        // After a failed save, redisplay exactly what was submitted (including
+                        // rows that were added but not saved yet); otherwise show saved showtimes.
+                        $savedShowtimes = $movie->showtimes->keyBy('id');
+                        $hallsById = $cinemas->flatMap->halls->keyBy('id');
+                        $rows = old('showtimes') !== null
+                            ? collect(old('showtimes'))
+                            : $movie->showtimes->values()->map(fn ($st) => [
+                                'id'         => $st->id,
+                                'cinema_id'  => $st->hall->cinema_id,
+                                'hall_id'    => $st->hall_id,
+                                'start_time' => $st->start_time->format('Y-m-d\TH:i'),
+                                'price'      => $st->price,
+                            ]);
+                        $nextRowIndex = $rows->isEmpty() ? 0 : $rows->keys()->max() + 1;
+
+                        // Booked showtimes can't be removed, so put back any the submission left out
+                        $shownIds = $rows->pluck('id')->filter()->map(fn ($id) => (int) $id);
+                        foreach ($movie->showtimes as $st) {
+                            if ($st->active_bookings_count > 0 && !$shownIds->contains($st->id)) {
+                                $rows->put($nextRowIndex++, [
+                                    'id'         => $st->id,
+                                    'cinema_id'  => $st->hall->cinema_id,
+                                    'hall_id'    => $st->hall_id,
+                                    'start_time' => $st->start_time->format('Y-m-d\TH:i'),
+                                    'price'      => $st->price,
+                                ]);
+                            }
+                        }
+                    @endphp
                     <tbody id="showtimes-body">
-                        @foreach($movie->showtimes as $index => $st)
-                        <tr class="showtime-row">
+                        @foreach($rows as $index => $row)
+                        @php
+                            $saved       = !empty($row['id']) ? $savedShowtimes->get((int) $row['id']) : null;
+                            $bookedCount = $saved->active_bookings_count ?? 0;
+                            $rowCinemaId = $row['cinema_id'] ?? optional($hallsById->get($row['hall_id'] ?? null))->cinema_id;
+                            $rowHalls    = optional($cinemas->firstWhere('id', $rowCinemaId))->halls ?? collect();
+                        @endphp
+                        <tr class="showtime-row" data-booked="{{ $bookedCount }}">
                             <td>
-                                <input type="hidden" name="showtimes[{{ $index }}][id]" value="{{ $st->id }}">
-                                <select name="showtimes[{{ $index }}][cinema_id]"
-                                        class="form-select form-select-sm row-cinema-select" required>
-                                    <option value="">Select Cinema</option>
-                                    @foreach($cinemas as $cinema)
-                                    <option value="{{ $cinema->id }}" @selected($st->hall->cinema_id == $cinema->id)>
-                                        {{ $cinema->name }}
-                                    </option>
-                                    @endforeach
-                                </select>
+                                <input type="hidden" name="showtimes[{{ $index }}][id]" value="{{ $row['id'] ?? '' }}">
+                                @if($bookedCount > 0)
+                                    {{-- Booked seats belong to this hall, so the cinema/hall is locked --}}
+                                    <input type="hidden" name="showtimes[{{ $index }}][cinema_id]" value="{{ $saved->hall->cinema_id }}">
+                                    <div style="font-size:0.85rem;color:var(--text);">{{ optional($cinemas->firstWhere('id', $saved->hall->cinema_id))->name }}</div>
+                                @else
+                                    <select name="showtimes[{{ $index }}][cinema_id]"
+                                            class="form-select form-select-sm row-cinema-select" required>
+                                        <option value="">Select Cinema</option>
+                                        @foreach($cinemas as $cinema)
+                                        <option value="{{ $cinema->id }}" @selected($rowCinemaId == $cinema->id)>
+                                            {{ $cinema->name }}
+                                        </option>
+                                        @endforeach
+                                    </select>
+                                @endif
                             </td>
                             <td>
-                                <select name="showtimes[{{ $index }}][hall_id]"
-                                        class="form-select form-select-sm row-hall-select" required>
-                                    <option value="{{ $st->hall_id }}">{{ $st->hall->name }}</option>
-                                </select>
+                                @if($bookedCount > 0)
+                                    <input type="hidden" name="showtimes[{{ $index }}][hall_id]" class="row-hall-select" value="{{ $saved->hall_id }}">
+                                    <div style="font-size:0.85rem;color:var(--text);">{{ $saved->hall->name }}</div>
+                                    <span class="badge bg-warning text-dark mt-1" title="Showtimes with bookings can't be moved or removed">
+                                        <i class="bi bi-lock-fill"></i> {{ $bookedCount }} {{ Str::plural('booking', $bookedCount) }}
+                                    </span>
+                                @else
+                                    <select name="showtimes[{{ $index }}][hall_id]"
+                                            class="form-select form-select-sm row-hall-select" required>
+                                        @if($rowHalls->isEmpty())
+                                            <option value="">Select Cinema First</option>
+                                        @else
+                                            <option value="">Select Hall</option>
+                                            @foreach($rowHalls as $hall)
+                                            <option value="{{ $hall->id }}" @selected(($row['hall_id'] ?? null) == $hall->id)>{{ $hall->name }}</option>
+                                            @endforeach
+                                        @endif
+                                    </select>
+                                @endif
+                                @error('showtimes.' . $index . '.hall_id')
+                                <div class="text-danger" style="font-size:0.75rem;margin-top:2px;">
+                                    <i class="bi bi-exclamation-circle"></i> {{ $message }}
+                                </div>
+                                @enderror
                             </td>
                             <td>
                                 <input type="datetime-local"
                                        name="showtimes[{{ $index }}][start_time]"
                                        class="form-control form-control-sm showtime-dt"
-                                       value="{{ $st->start_time->format('Y-m-d\TH:i') }}" required>
+                                       value="{{ $row['start_time'] ?? '' }}" required>
                                 @error('showtimes.' . $index . '.start_time')
                                 <div class="text-danger" style="font-size:0.75rem;margin-top:2px;">
                                     <i class="bi bi-exclamation-circle"></i> {{ $message }}
@@ -144,15 +206,13 @@
                                 @enderror
                             </td>
                             <td>
-                                <span class="end-time-label" style="font-size:0.8rem;color:var(--muted);">
-                                    {{ $st->end_time->format('H:i') }}
-                                </span>
+                                <span class="end-time-label" style="font-size:0.8rem;color:var(--muted);">—</span>
                             </td>
                             <td>
                                 <input type="number"
                                        name="showtimes[{{ $index }}][price]"
                                        class="form-control form-control-sm"
-                                       value="{{ $st->price }}"
+                                       value="{{ $row['price'] ?? '' }}"
                                        step="0.01" min="0" required>
                             </td>
                             <td>
@@ -161,9 +221,15 @@
                                 </div>
                             </td>
                             <td class="text-center">
-                                <button type="button" class="btn btn-sm btn-outline-danger remove-row" title="Remove">
-                                    <i class="bi bi-trash"></i>
-                                </button>
+                                @if($bookedCount > 0)
+                                    <span title="Has bookings — cancel them before removing this showtime" style="color:var(--muted);">
+                                        <i class="bi bi-lock"></i>
+                                    </span>
+                                @else
+                                    <button type="button" class="btn btn-sm btn-outline-danger remove-row" title="Remove">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                @endif
                             </td>
                         </tr>
                         @endforeach
@@ -172,7 +238,7 @@
 
                 <div id="no-showtimes-msg"
                      class="text-center py-4"
-                     style="color:var(--muted);font-size:0.9rem;{{ $movie->showtimes->count() > 0 ? 'display:none;' : '' }}">
+                     style="color:var(--muted);font-size:0.9rem;{{ $rows->isNotEmpty() ? 'display:none;' : '' }}">
                     <i class="bi bi-calendar-x me-2"></i>No showtimes yet. Click "+ Add Showtime" to begin.
                 </div>
             </div>
@@ -194,12 +260,16 @@
 const DURATION      = {{ $movie->duration }};
 const CINEMAS       = @json($cinemas);
 const ALL_SHOWTIMES = @json($allShowtimes);
-const HALLS_URL     = "{{ route('admin.api.cinemas.halls', ['cinema' => ':id']) }}";
-
 const showtimesBody = document.getElementById('showtimes-body');
 const addBtn        = document.getElementById('add-showtime');
 const noMsg         = document.getElementById('no-showtimes-msg');
-let rowCount        = {{ $movie->showtimes->count() }};
+let rowCount        = {{ $nextRowIndex }};
+
+function escapeHtml(value) {
+    const div = document.createElement('div');
+    div.textContent = value ?? '';
+    return div.innerHTML;
+}
 
 function toggleNoMsg() {
     noMsg.style.display = showtimesBody.children.length === 0 ? 'block' : 'none';
@@ -208,6 +278,7 @@ function toggleNoMsg() {
 // Wire existing rows on page load
 document.querySelectorAll('.showtime-row').forEach(row => {
     wireRow(row);
+    updateEndTime(row);
     refreshAvailability(row);
 });
 
@@ -218,7 +289,7 @@ addBtn.addEventListener('click', () => {
     tr.className = 'showtime-row';
 
     let cinemaOpts = '<option value="">Select Cinema</option>';
-    CINEMAS.forEach(c => cinemaOpts += `<option value="${c.id}">${c.name}</option>`);
+    CINEMAS.forEach(c => cinemaOpts += `<option value="${c.id}">${escapeHtml(c.name)}</option>`);
 
     tr.innerHTML = `
         <td>
@@ -265,44 +336,39 @@ function wireRow(row) {
     const hallSelect   = row.querySelector('.row-hall-select');
     const dtInput      = row.querySelector('.showtime-dt');
 
-    cinemaSelect.addEventListener('change', function () {
-        fetchHalls(this.value, hallSelect, () => refreshAvailability(row));
-    });
-
-    hallSelect.addEventListener('change', () => refreshAvailability(row));
+    // Booked rows have their cinema/hall locked, so there's no select to wire
+    if (cinemaSelect) {
+        cinemaSelect.addEventListener('change', function () {
+            fillHalls(this.value, hallSelect);
+            refreshAvailability(row);
+        });
+        hallSelect.addEventListener('change', () => refreshAvailability(row));
+    }
 
     dtInput.addEventListener('change', () => {
         updateEndTime(row);
         refreshAvailability(row);
     });
 
-    row.querySelector('.remove-row').addEventListener('click', () => {
+    row.querySelector('.remove-row')?.addEventListener('click', () => {
         row.remove();
         toggleNoMsg();
     });
-
-    // Reload halls for existing rows (edit mode)
-    if (cinemaSelect.value && hallSelect.options.length <= 1) {
-        fetchHalls(cinemaSelect.value, hallSelect, () => refreshAvailability(row));
-    }
 }
 
-function fetchHalls(cinemaId, selectEl, cb) {
-    if (!cinemaId) {
+// Halls come with the cinemas already on the page, so no extra request is needed
+function fillHalls(cinemaId, selectEl) {
+    const cinema = CINEMAS.find(c => String(c.id) === String(cinemaId));
+    if (!cinema) {
         selectEl.innerHTML = '<option value="">Select Cinema First</option>';
         return;
     }
-    const saved = selectEl.value;
-    selectEl.innerHTML = '<option value="">Loading halls…</option>';
-    fetch(HALLS_URL.replace(':id', cinemaId))
-        .then(r => r.json())
-        .then(halls => {
-            selectEl.innerHTML = '<option value="">Select Hall</option>';
-            halls.forEach(h => selectEl.innerHTML += `<option value="${h.id}">${h.name}</option>`);
-            if (saved) selectEl.value = saved;
-            if (cb) cb();
-        })
-        .catch(() => selectEl.innerHTML = '<option value="">Error loading halls</option>');
+    if (!cinema.halls.length) {
+        selectEl.innerHTML = '<option value="">No halls in this cinema</option>';
+        return;
+    }
+    selectEl.innerHTML = '<option value="">Select Hall</option>'
+        + cinema.halls.map(h => `<option value="${h.id}">${escapeHtml(h.name)}</option>`).join('');
 }
 
 function updateEndTime(row) {
@@ -340,7 +406,7 @@ function renderAvailability(slots, currentDt) {
         const overlaps = newStart < s.end_ts && newEnd > s.start_ts;
         const color    = overlaps ? '#dc3545' : 'var(--muted)';
         const icon     = overlaps ? '⚠ ' : '· ';
-        html += `<div style="color:${color};line-height:1.5;">${icon}${s.start_time.slice(11,16)}–${s.end_time.slice(11,16)} <span style="opacity:.6;">${s.movie}</span></div>`;
+        html += `<div style="color:${color};line-height:1.5;">${icon}${s.start_time.slice(11,16)}–${s.end_time.slice(11,16)} <span style="opacity:.6;">${escapeHtml(s.movie)}</span></div>`;
     });
     return html;
 }

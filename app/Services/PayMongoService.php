@@ -15,8 +15,9 @@ class PayMongoService
 
     public function __construct()
     {
-        $this->apiKey = config('paymongo.api_key');
-        $this->secretKey = config('paymongo.secret_key');
+        // Cast so the app still boots when the keys aren't configured yet
+        $this->apiKey = (string) config('paymongo.api_key');
+        $this->secretKey = (string) config('paymongo.secret_key');
         
         $this->client = new Client([
             'base_uri' => $this->baseUrl,
@@ -41,11 +42,12 @@ class PayMongoService
                         'show_description' => true,
                         'show_line_items' => true,
                         'statement_descriptor' => 'Pampanga',
-                        'description' => 'Cinema Booking',
+                        'description' => $data['description'] ?? 'Cinema Booking',
+                        'reference_number' => $data['reference_number'],
                         'line_items' => [
                             [
                                 'currency' => 'PHP',
-                                'amount' => (int)($data['amount'] * 100),
+                                'amount' => (int) round($data['amount'] * 100),
                                 'name' => 'Cinema Ticket',
                                 'quantity' => (int)$data['quantity'],
                             ]
@@ -120,6 +122,26 @@ class PayMongoService
     }
 
     /**
+     * Whether a checkout session has actually been paid.
+     *
+     * The session's own `status` is only "active" or "expired" — "active" just
+     * means the checkout page is still open, not that the customer paid. Payment
+     * shows up as a paid entry in `payments` / a succeeded payment intent.
+     */
+    public function isCheckoutSessionPaid(array $session): bool
+    {
+        $attributes = $session['attributes'] ?? [];
+
+        foreach ($attributes['payments'] ?? [] as $payment) {
+            if (($payment['attributes']['status'] ?? null) === 'paid') {
+                return true;
+            }
+        }
+
+        return ($attributes['payment_intent']['attributes']['status'] ?? null) === 'succeeded';
+    }
+
+    /**
      * Create a payment (alternative method)
      */
     public function createPayment(array $data): array
@@ -189,11 +211,32 @@ class PayMongoService
     /**
      * Verify webhook signature
      */
-    public function verifyWebhookSignature(string $payload, string $signature): bool
+    public function verifyWebhookSignature(string $payload, string $signatureHeader): bool
     {
-        $webhookSecret = config('paymongo.webhook_secret');
-        $computedSignature = hash_hmac('sha256', $payload, $webhookSecret);
-        
-        return hash_equals($computedSignature, $signature);
+        $webhookSecret = (string) config('paymongo.webhook_secret');
+        if ($webhookSecret === '') {
+            return false;
+        }
+
+        // Header format: "t=<timestamp>,te=<test signature>,li=<live signature>"
+        $parts = [];
+        foreach (explode(',', $signatureHeader) as $pair) {
+            [$key, $value] = array_pad(explode('=', trim($pair), 2), 2, '');
+            $parts[$key] = $value;
+        }
+
+        if (empty($parts['t'])) {
+            return false;
+        }
+
+        $computedSignature = hash_hmac('sha256', $parts['t'] . '.' . $payload, $webhookSecret);
+
+        foreach (['te', 'li'] as $key) {
+            if (!empty($parts[$key]) && hash_equals($computedSignature, $parts[$key])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

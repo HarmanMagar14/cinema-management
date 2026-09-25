@@ -340,7 +340,7 @@
             @forelse($bookedMovies as $booking)
                 <div class="booking-row">
                     @if($booking->showtime->movie->poster ?? null)
-                        <img src="{{ Storage::url($booking->showtime->movie->poster) }}" alt="Poster" class="booking-poster">
+                        <img src="{{ $booking->showtime->movie->poster_url }}" alt="Poster" class="booking-poster">
                     @else
                         <div class="booking-poster-placeholder"><i class="bi bi-film"></i></div>
                     @endif
@@ -374,7 +374,7 @@
             @forelse($watchedMovies as $booking)
                 <div class="booking-row">
                     @if($booking->showtime->movie->poster ?? null)
-                        <img src="{{ Storage::url($booking->showtime->movie->poster) }}" alt="Poster" class="booking-poster">
+                        <img src="{{ $booking->showtime->movie->poster_url }}" alt="Poster" class="booking-poster">
                     @else
                         <div class="booking-poster-placeholder"><i class="bi bi-film"></i></div>
                     @endif
